@@ -145,6 +145,7 @@ class Operation(CachedPropertyModel):
     tags: Optional[List[str]] = []
     request: Optional[Argument] = None
     response: str = ''
+    status_code: Optional[str] = None
     additional_responses: Dict[Union[str, int], Dict[str, str]] = {}
     return_type: str = ''
     callbacks: Dict[UsefulStr, List["Operation"]] = {}
@@ -564,9 +565,10 @@ class OpenAPIParser(OpenAPIModelParser):
         path: List[str],
     ) -> Dict[Union[str, int], Dict[str, DataType]]:
         data_types = super().parse_responses(name, responses, path)  # type: ignore[arg-type]
-        status_code_200 = data_types.get('200')
-        if status_code_200:
-            data_type = list(status_code_200.values())[0]
+        primary_status_code = self._get_primary_status_code(data_types)
+        primary_response = data_types.get(primary_status_code)
+        if primary_response:
+            data_type = list(primary_response.values())[0]
             if data_type:
                 data_type = self._collapse_root_model(data_type)
                 self.data_types.append(data_type)
@@ -574,9 +576,13 @@ class OpenAPIParser(OpenAPIModelParser):
             data_type = DataType(type='None')
         type_hint = data_type.type_hint  # TODO: change to lazy loading
         self._temporary_operation['response'] = type_hint
+        if primary_status_code and str(primary_status_code) != '200':
+            self._temporary_operation['status_code'] = str(primary_status_code)
         return_types = {type_hint: data_type}
         for status_code, additional_responses in data_types.items():
-            if status_code != '200' and additional_responses:  # 200 is processed above
+            if (
+                status_code != primary_status_code and additional_responses
+            ):  # primary status code is processed above
                 data_type = list(additional_responses.values())[0]
                 if data_type:
                     self.data_types.append(data_type)
@@ -593,6 +599,21 @@ class OpenAPIParser(OpenAPIModelParser):
             self.data_types.append(return_type)
         self._temporary_operation['return_type'] = return_type.type_hint
         return data_types
+
+    def _get_primary_status_code(
+        self, data_types: Dict[Union[str, int], Dict[str, DataType]]
+    ) -> Optional[Union[str, int]]:
+        for status_code in data_types:
+            if str(status_code) == '200':
+                return status_code
+        return next(
+            (
+                status_code
+                for status_code in data_types
+                if str(status_code).startswith('2')
+            ),
+            None,
+        )
 
     def parse_operation(
         self,
